@@ -2,6 +2,7 @@ import 'dart:ffi';
 
 import 'package:avanda/types/Query.dart';
 
+
 class Service {
   String? n; /// service name
   String? f; /// service function
@@ -12,6 +13,25 @@ class Service {
   Map pr; /// Service params
   Map ft;
   Query? q;
+
+  Map toJson() => {
+    'n': n,
+    'f': f,
+    'c': c.map((e){
+      if(e is Service){
+        return e.toJson();
+      }else{
+        return e;
+      }
+    }).toList(),
+    'a': a,
+    'al': al,
+    'p': p,
+    'pr': pr,
+    'ft': ft,
+    'q': q?.toJson() ?? {}
+  };
+
   Service({
     this.a,
     this.q,
@@ -23,4 +43,6 @@ class Service {
     required this.p,
     required this.pr,/// Service params
   });
+
+
 }

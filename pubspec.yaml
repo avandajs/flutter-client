@@ -1,6 +1,6 @@
 name: avanda
 description: A new Flutter project.
-version: 0.0.1
+version: 0.0.2
 homepage:
 
 environment:
@@ -12,6 +12,9 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^0.13.4
+
+repository: https://github.com/avandajs/flutter-client
+
 
 dev_dependencies:
   flutter_test:

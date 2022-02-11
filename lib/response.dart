@@ -5,8 +5,8 @@ class Response {
 
   Response(this.rawResponse);
 
-  getData() {
-    return rawResponse.data;
+  getData<T>() {
+    return rawResponse.data as T;
   }
 
   setData<DataType>(DataType data) {

@@ -1,9 +1,6 @@
 import 'package:avanda/avanda.dart';
-
-main() async {
+void main() async {
   Avanda.setGraphRoot("https://graph.tyfarms.com/");
 
-  var avanda = Avanda();
-
-  print(await avanda.service('test/testFnc').get());
+  print(await Avanda().service("User/login").post({}));
 }

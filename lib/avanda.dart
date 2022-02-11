@@ -6,8 +6,8 @@ import 'package:http/http.dart' as http;
 import 'package:avanda/response.dart';
 import 'package:avanda/types/Query.dart';
 import 'package:avanda/types/Service.dart';
-import 'package:class_to_map/class_to_map.dart';
-
+// import 'package:class_to_map/class_to_map.dart';
+ 
 enum RequestMethods{
   get,
   delete,
@@ -232,7 +232,7 @@ class Avanda {
     queryTree.al = autoLink;
 
 
-    return jsonEncode(queryTree.toMap());
+    return jsonEncode(queryTree);
   }
 
    Future<Response> makeRequest({endpoint, required RequestMethods method, params}) async {
@@ -256,9 +256,12 @@ class Avanda {
         break;
     }
 
-    print(httpResponse.body);
+    var response = Response(ResponseStruct.fromJson(jsonDecode(httpResponse.body)));
 
-    return Response(jsonDecode(httpResponse.body) as ResponseStruct);
+    print(httpResponse.body);
+    print(response.getData<Object>()['email']);
+
+    return response;
 
 // return new Promise(async (resolve, reject) => {
 // try {
