@@ -1,25 +1,31 @@
 library avanda;
 
 import 'dart:convert';
-import 'package:avanda/types/ResponseStruct.dart';
-import 'package:http/http.dart' as http;
+
+import 'package:avanda/exceptions/Internal_server_error.dart';
+import 'package:avanda/exceptions/access_forbidden_error.dart';
+import 'package:avanda/exceptions/bad_request_error.dart';
+import 'package:avanda/exceptions/file_not_found_error.dart';
+import 'package:avanda/exceptions/internet_network_error.dart';
+import 'package:avanda/exceptions/method_not_allowed_error.dart';
+import 'package:avanda/exceptions/request_exception.dart';
+import 'package:avanda/exceptions/unauthorized_error.dart';
+import 'package:avanda/exceptions/unknown_error.dart';
 import 'package:avanda/response.dart';
 import 'package:avanda/types/Query.dart';
+import 'package:avanda/types/ResponseStruct.dart';
 import 'package:avanda/types/Service.dart';
+import 'package:http/http.dart' as http;
 // import 'package:class_to_map/class_to_map.dart';
- 
-enum RequestMethods{
-  get,
-  delete,
-  post
-}
+
+enum RequestMethods { get, delete, post }
 
 class Avanda {
   static String endpoint = "/";
 
   Service queryTree = Service(ft: {}, c: [], p: 0, pr: {});
   static Map? requestConfig;
-  static Map<String,String> headers = {};
+  static Map<String, String> headers = {};
 
   bool autoLink = true;
 
@@ -31,6 +37,7 @@ class Avanda {
   static setGraphRoot(String root) {
     Avanda.endpoint = root;
   }
+
   static setRequestConfig(Map config) {
     Avanda.requestConfig = {
       ...(Avanda.requestConfig ?? {}),
@@ -46,8 +53,7 @@ class Avanda {
     return column;
   }
 
-  Future<dynamic> file(event) async {
-  }
+  Future<dynamic> file(event) async {}
 
   static validColOnly(String column) {
     RegExp pattern = RegExp(r'!/[\w._]+/');
@@ -231,37 +237,50 @@ class Avanda {
     }
     queryTree.al = autoLink;
 
-
     return jsonEncode(queryTree);
   }
 
-   Future<Response> makeRequest({endpoint, required RequestMethods method, params}) async {
-
+  Future<Response> makeRequest(
+      {endpoint, required RequestMethods method, params}) async {
     http.Response httpResponse;
 
     endpoint = Avanda.endpoint + '?query=' + endpoint;
 
-    print(endpoint);
-
-    switch(method){
-
-      case RequestMethods.get:
-        httpResponse = await http.get(Uri.parse(endpoint),headers: headers);
-        break;
-      case RequestMethods.post:
-        httpResponse = await http.post(Uri.parse(endpoint),headers: headers,body: params);
-        break;
-      case RequestMethods.delete:
-        httpResponse = await http.delete(Uri.parse(endpoint),headers: headers,body: params);
-        break;
+    try{
+      switch (method) {
+        case RequestMethods.get:
+          httpResponse = await http.get(Uri.parse(endpoint), headers: headers);
+          break;
+        case RequestMethods.post:
+          httpResponse = await http.post(Uri.parse(endpoint),
+              headers: headers, body: params);
+          break;
+        case RequestMethods.delete:
+          httpResponse = await http.delete(Uri.parse(endpoint),
+              headers: headers, body: params);
+          break;
+      }
+    }catch(e){
+      throw InternetNetworkError(ResponseStruct.fromJson({}));
     }
 
-    var response = Response(ResponseStruct.fromJson(jsonDecode(httpResponse.body)));
+    var response = ResponseStruct.fromJson(jsonDecode(httpResponse.body));
 
-    print(httpResponse.body);
-    print(response.getData<Object>()['email']);
+    Map<int, RequestException> errors = {
+      404: FileNotFoundError(response),
+      400: BadRequestError(response),
+      500: InternalServerError(response),
+      403: AccessForbiddenError(response),
+      401: UnauthorizedAccess(response),
+      405: MethodNotAllowedError(response),
+      0: InternetNetworkError(response),
+    };
 
-    return response;
+    if (errors.containsKey(response.status) && (response.status ?? 500) >= 300){
+      throw errors[response.status] ?? UnknownError(response);
+    }
+
+    return Response(response);
 
 // return new Promise(async (resolve, reject) => {
 // try {
@@ -300,7 +319,7 @@ class Avanda {
   }
 
   Future<Response> get() async {
-    var link =  toLink();
+    var link = toLink();
     return await makeRequest(endpoint: link, method: RequestMethods.get);
   }
 
@@ -321,7 +340,8 @@ class Avanda {
 
     String link = toLink();
 
-    return await makeRequest(endpoint: link, method: RequestMethods.post, params: postData);
+    return await makeRequest(
+        endpoint: link, method: RequestMethods.post, params: postData);
   }
 
   Future<Response> update(values) async {
@@ -331,8 +351,9 @@ class Avanda {
 
     postData = values;
 
-    String link =  toLink() + '&_method=PATCH';
-    return await makeRequest(endpoint: link, method: RequestMethods.post, params: postData);
+    String link = toLink() + '&_method=PATCH';
+    return await makeRequest(
+        endpoint: link, method: RequestMethods.post, params: postData);
   }
 
   params(Map params) {
