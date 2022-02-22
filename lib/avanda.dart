@@ -32,7 +32,7 @@ class Avanda {
   dynamic lastCol;
   bool accumulate = false;
 
-  Map? postData;
+  Map<dynamic, dynamic>? postData;
 
   static setGraphRoot(String root) {
     Avanda.endpoint = root;
@@ -240,13 +240,27 @@ class Avanda {
     return jsonEncode(queryTree);
   }
 
-  Future<Response> makeRequest(
-      {endpoint, required RequestMethods method, params}) async {
+  stringifyPayload(Map<dynamic, dynamic>? payload) {
+    if (payload == null) {
+      return {};
+    }
+
+    return payload.map((key, value) => MapEntry(key, value.toString()));
+  }
+
+
+  Future<Response> makeRequest({
+    endpoint,
+    required RequestMethods method,
+    Map<dynamic, dynamic>? params,
+  }) async {
     http.Response httpResponse;
+
+    params = stringifyPayload(params);
 
     endpoint = Avanda.endpoint + '?query=' + endpoint;
 
-    try{
+    try {
       switch (method) {
         case RequestMethods.get:
           httpResponse = await http.get(Uri.parse(endpoint), headers: headers);
@@ -260,8 +274,9 @@ class Avanda {
               headers: headers, body: params);
           break;
       }
-    }catch(e){
-      throw InternetNetworkError(ResponseStruct.fromJson({}));
+    } catch (e) {
+      throw InternetNetworkError(
+          ResponseStruct.fromJson({'msg': e.toString()}));
     }
 
     var response = ResponseStruct.fromJson(jsonDecode(httpResponse.body));
@@ -276,7 +291,8 @@ class Avanda {
       0: InternetNetworkError(response),
     };
 
-    if (errors.containsKey(response.status) && (response.status ?? 500) >= 300){
+    if (errors.containsKey(response.status) &&
+        (response.status ?? 500) >= 300) {
       throw errors[response.status] ?? UnknownError(response);
     }
 
@@ -323,7 +339,7 @@ class Avanda {
     return await makeRequest(endpoint: link, method: RequestMethods.get);
   }
 
-  Future<Response> post(Map values) async {
+  Future<Response> post(Map<dynamic, dynamic> values) async {
     return await set(values);
   }
 
@@ -332,7 +348,7 @@ class Avanda {
     return await makeRequest(endpoint: link, method: RequestMethods.delete);
   }
 
-  Future<Response> set(Map values) async {
+  Future<Response> set(Map<dynamic, dynamic> values) async {
     if (queryTree.n == null) {
       throw "Specify service to send request to";
     }
@@ -341,10 +357,13 @@ class Avanda {
     String link = toLink();
 
     return await makeRequest(
-        endpoint: link, method: RequestMethods.post, params: postData);
+      endpoint: link,
+      method: RequestMethods.post,
+      params: postData,
+    );
   }
 
-  Future<Response> update(values) async {
+  Future<Response> update(Map<dynamic, dynamic> values) async {
     if (queryTree.n == null) {
       throw 'Specify service to send request to';
     }
