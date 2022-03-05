@@ -34,6 +34,14 @@ class Avanda {
 
   Map<dynamic, dynamic>? postData;
 
+  static setHeaders(Map<String, String> newHeaders) {
+    if (headers.isEmpty) {
+      headers = newHeaders;
+    } else {
+      headers.addAll(newHeaders);
+    }
+  }
+
   static setGraphRoot(String root) {
     Avanda.endpoint = root;
   }
@@ -248,7 +256,6 @@ class Avanda {
     return payload.map((key, value) => MapEntry(key, value.toString()));
   }
 
-
   Future<Response> makeRequest({
     endpoint,
     required RequestMethods method,
@@ -263,15 +270,24 @@ class Avanda {
     try {
       switch (method) {
         case RequestMethods.get:
-          httpResponse = await http.get(Uri.parse(endpoint), headers: headers);
+          httpResponse = await http.get(
+            Uri.parse(endpoint),
+            headers: headers,
+          );
           break;
         case RequestMethods.post:
-          httpResponse = await http.post(Uri.parse(endpoint),
-              headers: headers, body: params);
+          httpResponse = await http.post(
+            Uri.parse(endpoint),
+            headers: headers,
+            body: params,
+          );
           break;
         case RequestMethods.delete:
-          httpResponse = await http.delete(Uri.parse(endpoint),
-              headers: headers, body: params);
+          httpResponse = await http.delete(
+            Uri.parse(endpoint),
+            headers: headers,
+            body: params,
+          );
           break;
       }
     } catch (e) {

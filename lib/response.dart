@@ -33,4 +33,8 @@ class Response {
   int getCurrentPage() {
     return rawResponse.currentPage;
   }
+
+  int getPerPage() {
+    return rawResponse.perPage;
+  }
 }
