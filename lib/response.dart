@@ -37,4 +37,8 @@ class Response {
   int getPerPage() {
     return rawResponse.perPage;
   }
+
+  bool isError() {
+    return rawResponse.status == 0 || (rawResponse.status ?? 0) > 299;
+  }
 }

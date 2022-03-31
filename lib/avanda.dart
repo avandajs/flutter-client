@@ -1,5 +1,6 @@
 library avanda;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:avanda/exceptions/Internal_server_error.dart';
@@ -16,16 +17,67 @@ import 'package:avanda/types/Query.dart';
 import 'package:avanda/types/ResponseStruct.dart';
 import 'package:avanda/types/Service.dart';
 import 'package:http/http.dart' as http;
-// import 'package:class_to_map/class_to_map.dart';
+import 'package:web_socket_channel/io.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+
+typedef WatchCallback = Function(Response response);
+typedef ErrorCallback = Function(Response response);
+typedef CloseEventFnc = Function();
+//void onData(T event)?,
+//       {Function? onError, void onDone()?, bool? cancelOnError}
 
 enum RequestMethods { get, delete, post }
+
+class AvandaConfig {
+  bool secureWebSocket = false;
+  String? rootUrl;
+
+  AvandaConfig({required this.rootUrl, this.secureWebSocket = false});
+}
+
+class AvandaStreamEvent {
+  CloseEventFnc onClosed;
+  Function? onError;
+
+  AvandaStreamEvent({required this.onClosed, this.onError});
+}
+
+class AvandaStream {
+  Stream<Response> stream;
+  WebSocketSink wsSink;
+  CloseEventFnc? onClosed;
+  Function? onError;
+
+  StreamSubscription<Response> listen(void Function(Response event) onData) {
+    return stream.listen(
+      onData,
+      onDone: onClosed,
+      onError: onError,
+    );
+  }
+
+  AvandaStream({required this.stream, required this.wsSink});
+
+  Future<AvandaStream> close() async {
+    await wsSink.close();
+    return this;
+  }
+
+  Future<AvandaStream> send(Map<String, dynamic> data) async {
+    wsSink.add(jsonEncode(data));
+    return this;
+  }
+}
 
 class Avanda {
   static String endpoint = "/";
 
   Service queryTree = Service(ft: {}, c: [], p: 0, pr: {});
-  static Map? requestConfig;
+  static AvandaConfig config =
+      AvandaConfig(rootUrl: null, secureWebSocket: false);
   static Map<String, String> headers = {};
+
+  WebSocketChannel? channel;
 
   bool autoLink = true;
 
@@ -43,14 +95,11 @@ class Avanda {
   }
 
   static setGraphRoot(String root) {
-    Avanda.endpoint = root;
+    Avanda.config.rootUrl = root;
   }
 
-  static setRequestConfig(Map config) {
-    Avanda.requestConfig = {
-      ...(Avanda.requestConfig ?? {}),
-      ...config,
-    };
+  static setConfig(AvandaConfig config) {
+    Avanda.config = config;
   }
 
   static column(String column) {
@@ -261,11 +310,15 @@ class Avanda {
     required RequestMethods method,
     Map<dynamic, dynamic>? params,
   }) async {
+    if (Avanda.config.rootUrl == null) {
+      throw "Specify the server root URL in Avanda.setConfig() function";
+    }
+
     http.Response httpResponse;
 
     params = stringifyPayload(params);
 
-    endpoint = Avanda.endpoint + '?query=' + endpoint;
+    endpoint = Avanda.config.rootUrl! + '?query=' + endpoint;
 
     try {
       switch (method) {
@@ -313,41 +366,6 @@ class Avanda {
     }
 
     return Response(response);
-
-// return new Promise(async (resolve, reject) => {
-// try {
-// let res = await (req as any)[method](endpoint, await params,Graph.requestConfig);
-// res = res.data;
-// resolve(new Response(res));
-// } catch (e) {
-// let err = e as (Error | AxiosError)
-//
-// let error: ResponseStruct = {
-// currentPage: 0,
-// data: undefined,
-// msg: "",
-// networkMsg: err?.message ?? "unknown",
-// status: 0,
-// totalPages: 0
-// };
-//
-// let netRes: ResponseStruct
-//
-//
-// if (axios.isAxiosError(err)){
-// netRes =  (err.response as unknown as ResponseStruct)
-// error.data = netRes?.data?.data
-// error.msg = netRes?.data?.msg
-// error.status = netRes?.status ?? netRes?.data?.statusCode
-// error.totalPages = netRes?.data?.totalPages
-// error.currentPage = netRes?.data?.currentPage
-// }
-//
-// error.networkMsg = err.message
-//
-// reject(new Response(error));
-// }
-// });
   }
 
   Future<Response> get() async {
@@ -397,5 +415,59 @@ class Avanda {
     }
     queryTree.pr = params;
     return this;
+  }
+
+  Avanda data(Map data) {
+    if (queryTree.n == null) {
+      throw 'Specify service to bind param to';
+    }
+    postData = data;
+    return this;
+  }
+
+  Future<AvandaStream?> watch([WatchCallback? callback]) async {
+    if (queryTree.n == null) {
+      throw "Specify service to send request to";
+    }
+
+    if (Avanda.config.rootUrl == null) {
+      throw "Specify the server root URL in Avanda.setConfig() function";
+    }
+
+    String link = toLink();
+
+    var url = Uri.parse(Avanda.config.rootUrl!);
+
+    var endpoint =
+        (Avanda.config.secureWebSocket == true ? 'wss://' : 'ws://') + url.host;
+
+    if (url.hasPort) {
+      endpoint += (':' + url.port.toString());
+    }
+    endpoint += '/watch?query=' + link;
+
+    if (postData != null && postData!.isNotEmpty) {
+      endpoint += '&data=' + jsonEncode(postData);
+    }
+
+    channel = IOWebSocketChannel.connect(
+      Uri.parse(endpoint),
+      headers: headers,
+    );
+
+    var stream = AvandaStream(
+      stream: channel!.stream.map((event) => Response(ResponseStruct.fromJson(jsonDecode(event)))),
+      wsSink: channel!.sink,
+    );
+
+    if (callback != null) {
+      channel?.stream.listen((event) {
+        callback(Response(ResponseStruct.fromJson(jsonDecode(event))));
+      },onError: stream.onError,onDone: stream.onClosed);
+
+      return null;
+    } else {
+      return stream;
+    }
   }
 }
