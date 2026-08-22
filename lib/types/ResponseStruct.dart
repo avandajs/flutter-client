@@ -13,8 +13,8 @@ class ResponseStruct {
     this.status,
     this.currentPage = 1,
     this.networkMsg,
-    this.totalPages = 1,
     this.perPage = 0,
+    this.totalPages = 1,
   });
 
   factory ResponseStruct.fromJson(Map<String, dynamic> parsedJson) {
@@ -24,6 +24,7 @@ class ResponseStruct {
     res.status = parsedJson["status_code"] ?? 0;
     res.currentPage = parsedJson["current_page"] ?? 1;
     res.perPage = parsedJson["per_page"] ?? 1;
+    res.totalPages = parsedJson["total_pages"] ?? 1;
     return res;
   }
 }

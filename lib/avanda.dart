@@ -2,7 +2,6 @@ library avanda;
 
 import 'dart:async';
 import 'dart:convert';
-
 import 'package:avanda/exceptions/Internal_server_error.dart';
 import 'package:avanda/exceptions/access_forbidden_error.dart';
 import 'package:avanda/exceptions/bad_request_error.dart';
@@ -16,13 +15,17 @@ import 'package:avanda/response.dart';
 import 'package:avanda/types/Query.dart';
 import 'package:avanda/types/ResponseStruct.dart';
 import 'package:avanda/types/Service.dart';
+import 'package:avanda/ws_controller.dart';
 import 'package:http/http.dart' as http;
-import 'package:web_socket_channel/io.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
+
+// WSStatus is part of the public API via AvandaStream.statusChanges, so it has
+// to be reachable from this entry point.
+export 'package:avanda/ws_controller.dart' show WSController, WSStatus;
 
 typedef WatchCallback = Function(Response response);
 typedef ErrorCallback = Function(Response response);
 typedef CloseEventFnc = Function();
+typedef CloseFnc = Function();
 //void onData(T event)?,
 //       {Function? onError, void onDone()?, bool? cancelOnError}
 
@@ -30,41 +33,79 @@ enum RequestMethods { get, delete, post }
 
 class AvandaConfig {
   bool secureWebSocket = false;
+  bool debugMode = false;
   String? rootUrl;
-
-  AvandaConfig({required this.rootUrl, this.secureWebSocket = false});
-}
-
-class AvandaStreamEvent {
-  CloseEventFnc onClosed;
-  Function? onError;
-
-  AvandaStreamEvent({required this.onClosed, this.onError});
+  String? wsUrl;
+  AvandaConfig(
+      {required this.rootUrl, this.secureWebSocket = false, this.wsUrl});
 }
 
 class AvandaStream {
   Stream<Response> stream;
-  WebSocketSink wsSink;
-  CloseEventFnc? onClosed;
-  Function? onError;
+  StreamSink<String> wsSink;
+  CloseEventFnc? _onServerClosed; //Function? onError, void onDone()?
+  CloseEventFnc? _onClosed; //Function? onError, void onDone()?
+  Function(Object error)? _onError;
+  bool closed = false;
+  WSController controller;
+
+  AvandaStream(
+      {required this.stream, required this.wsSink, required this.controller});
 
   StreamSubscription<Response> listen(void Function(Response event) onData) {
     return stream.listen(
       onData,
-      onDone: onClosed,
-      onError: onError,
+      onDone: () {
+        if (!closed && _onServerClosed != null) {
+          _onServerClosed!();
+        }
+      },
+      onError: (error) {
+        if (_onError != null) _onError!(error);
+      },
     );
   }
 
-  AvandaStream({required this.stream, required this.wsSink});
+  /// Emits the current connection state and every later change, so callers can
+  /// show a reconnecting indicator instead of guessing from a silent stream.
+  Stream<WSStatus> get statusChanges => controller.statusChanges;
 
   Future<AvandaStream> close() async {
-    await wsSink.close();
+    closed = true;
+    await controller.closeWs();
+    if (closed && _onClosed != null) {
+      _onClosed!();
+    }
+    return this;
+  }
+
+  Future<AvandaStream> onServerClosed(Function(int? code)? onClosed) async {
+    if (!closed && onClosed != null) {
+      _onServerClosed = () {
+        onClosed(controller.closeCode);
+      };
+    }
+    return this;
+  }
+
+  Future<AvandaStream> onError(Function(Object error)? onError) async {
+    if (!closed && onError != null) {
+      _onError = onError;
+    }
+    return this;
+  }
+
+  Future<AvandaStream> onClosed(Function([int? code])? onClosed) async {
+    if (onClosed != null) {
+      _onClosed = () {
+        onClosed(controller.closeCode);
+      };
+    }
     return this;
   }
 
   Future<AvandaStream> send(Map<String, dynamic> data) async {
-    wsSink.add(jsonEncode(data));
+    controller.send(jsonEncode(data));
     return this;
   }
 }
@@ -72,12 +113,10 @@ class AvandaStream {
 class Avanda {
   static String endpoint = "/";
 
-  Service queryTree = Service(ft: {}, c: [], p: 0, pr: {});
+  Service queryTree = Service(ft: {}, c: [], p: 1, pr: {}, al: true);
   static AvandaConfig config =
       AvandaConfig(rootUrl: null, secureWebSocket: false);
   static Map<String, String> headers = {};
-
-  WebSocketChannel? channel;
 
   bool autoLink = true;
 
@@ -103,7 +142,7 @@ class Avanda {
   }
 
   static column(String column) {
-    RegExp pattern = RegExp(r'[^\w_]');
+    RegExp pattern = RegExp(r'[^\w\_\*]+');
     if (pattern.hasMatch(column)) {
       throw "Invalid column name";
     }
@@ -113,7 +152,7 @@ class Avanda {
   Future<dynamic> file(event) async {}
 
   static validColOnly(String column) {
-    RegExp pattern = RegExp(r'!/[\w._]+/');
+    RegExp pattern = RegExp(r'!/([\w._]+|\*)/');
     if (pattern.hasMatch(column)) {
       throw "Invalid column name";
     }
@@ -125,7 +164,7 @@ class Avanda {
   }
 
   Avanda disableAutoLink() {
-    autoLink = false;
+    queryTree.al = false;
     return this;
   }
 
@@ -201,7 +240,7 @@ class Avanda {
   }
 
   Avanda addCustomFilter(dynamic value, String operator) {
-    if (!lastCol) {
+    if (lastCol == null) {
       throw "Specify column to compare $value with";
     }
     Map filter = {
@@ -220,7 +259,7 @@ class Avanda {
     return this;
   }
 
-  ref(int id) {
+  Avanda ref(int id) {
     queryTree.ft = {
       ...queryTree.ft,
       ...objToFilter({'id': id})
@@ -228,18 +267,17 @@ class Avanda {
     return this;
   }
 
-  page(int page) {
+  Avanda page(int page) {
     queryTree.p = page;
     return this;
   }
 
-  search(String col, String keyword) {
-    queryTree.q = Query(c: Avanda.validColOnly(col), k: keyword);
-
+  Avanda search(String col, String keyword) {
+    queryTree.q = Query(c: Avanda.column(col), k: keyword);
     return this;
   }
 
-  select(List columns) {
+  Avanda select(List columns) {
     if (queryTree.n == null) {
       throw 'Specify service to select from';
     }
@@ -248,7 +286,7 @@ class Avanda {
     return this;
   }
 
-  selectAll(List columns) {
+  Avanda selectAll(List columns) {
     if (queryTree.n == null) {
       throw 'Specify service to select from';
     }
@@ -265,7 +303,7 @@ class Avanda {
     return this;
   }
 
-  fetch(List columns) {
+  Avanda fetch(List columns) {
     if (queryTree.n == null) {
       throw "Specify service to fetch from";
     }
@@ -292,8 +330,7 @@ class Avanda {
     if (queryTree.n == null) {
       throw "Service not specified";
     }
-    queryTree.al = autoLink;
-
+    queryTree.al = true;
     return jsonEncode(queryTree);
   }
 
@@ -319,6 +356,8 @@ class Avanda {
     params = stringifyPayload(params);
 
     endpoint = Avanda.config.rootUrl! + '?query=' + endpoint;
+
+    print(endpoint);
 
     try {
       switch (method) {
@@ -346,6 +385,9 @@ class Avanda {
     } catch (e) {
       throw InternetNetworkError(
           ResponseStruct.fromJson({'msg': e.toString()}));
+    }
+    if (Avanda.config.debugMode) {
+      print(httpResponse.body);
     }
 
     var response = ResponseStruct.fromJson(jsonDecode(httpResponse.body));
@@ -409,7 +451,7 @@ class Avanda {
         endpoint: link, method: RequestMethods.post, params: postData);
   }
 
-  params(Map params) {
+  Avanda params(Map params) {
     if (queryTree.n == null) {
       throw 'Specify service to bind param to';
     }
@@ -430,13 +472,15 @@ class Avanda {
       throw "Specify service to send request to";
     }
 
-    if (Avanda.config.rootUrl == null) {
+    var uri = (Avanda.config.wsUrl ?? Avanda.config.rootUrl);
+
+    if (uri == null) {
       throw "Specify the server root URL in Avanda.setConfig() function";
     }
 
     String link = toLink();
 
-    var url = Uri.parse(Avanda.config.rootUrl!);
+    var url = Uri.parse(uri);
 
     var endpoint =
         (Avanda.config.secureWebSocket == true ? 'wss://' : 'ws://') + url.host;
@@ -450,24 +494,16 @@ class Avanda {
       endpoint += '&data=' + jsonEncode(postData);
     }
 
-    channel = IOWebSocketChannel.connect(
-      Uri.parse(endpoint),
-      headers: headers,
-    );
+    var controller = WSController(wsUrl: endpoint, headers: headers);
+    var streamController = controller.streamController;
 
     var stream = AvandaStream(
-      stream: channel!.stream.map((event) => Response(ResponseStruct.fromJson(jsonDecode(event)))),
-      wsSink: channel!.sink,
+      stream: streamController.stream
+          .map((event) => Response(ResponseStruct.fromJson(jsonDecode(event)))),
+      wsSink: streamController.sink,
+      controller: controller,
     );
 
-    if (callback != null) {
-      channel?.stream.listen((event) {
-        callback(Response(ResponseStruct.fromJson(jsonDecode(event))));
-      },onError: stream.onError,onDone: stream.onClosed);
-
-      return null;
-    } else {
-      return stream;
-    }
+    return stream;
   }
 }
