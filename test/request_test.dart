@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:avanda/avanda.dart';
 import 'package:avanda/exceptions/Internal_server_error.dart';
@@ -299,6 +300,93 @@ void main() {
         ),
         throwsA(isA<FormatException>()),
       );
+    });
+  });
+
+  group('multipart uploads', () {
+    late Directory tempDir;
+    late File photo;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('avanda_upload_');
+      photo = File('${tempDir.path}/photo.jpg')..writeAsStringSync('raw-bytes');
+    });
+
+    tearDown(() => tempDir.deleteSync(recursive: true));
+
+    test('post with files sends multipart/form-data', () async {
+      await send(() => Avanda()
+          .service('Chat/send')
+          .post({'type': 'image', 'size': 2}, files: {'file': photo.path}));
+
+      final request = sent.single;
+      expect(request.method, 'POST');
+      expect(
+          request.headers['content-type'], startsWith('multipart/form-data'));
+      expect(request.body, contains('name="type"'));
+      expect(request.body, contains('image'));
+      expect(request.body, contains('name="size"'));
+      expect(request.body, contains('name="file"; filename="photo.jpg"'));
+      expect(request.body, contains('raw-bytes'));
+    });
+
+    test('forwards the static headers on a multipart request', () async {
+      Avanda.setHeaders({'Authorization': 'Bearer tok', 'X-Tenant': 'acme'});
+
+      await send(() => Avanda()
+          .service('Chat/send')
+          .set({'type': 'image'}, files: {'file': photo.path}));
+
+      expect(sent.single.headers, containsPair('Authorization', 'Bearer tok'));
+      expect(sent.single.headers, containsPair('X-Tenant', 'acme'));
+    });
+
+    test('an error envelope throws the same RequestException as a plain post',
+        () {
+      expect(
+        send(
+          () => Avanda()
+              .service('Chat/send')
+              .post({'type': 'image'}, files: {'file': photo.path}),
+          respond: (_) => envelope(400, msg: 'bad upload'),
+        ),
+        throwsA(allOf(isA<RequestException>(), isA<BadRequestError>())),
+      );
+    });
+
+    test('a socket failure becomes InternetNetworkError', () {
+      expect(
+        send(
+          () => Avanda()
+              .service('Chat/send')
+              .post({'type': 'image'}, files: {'file': photo.path}),
+          failWith: (_) => http.ClientException('Connection refused'),
+        ),
+        throwsA(isA<InternetNetworkError>()),
+      );
+    });
+
+    test('a missing file throws FileSystemException before sending', () async {
+      await expectLater(
+        send(() => Avanda().service('Chat/send').post({'type': 'image'},
+            files: {'file': '${tempDir.path}/missing.jpg'})),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(sent, isEmpty);
+    });
+
+    test('an empty or absent files map still sends a form-encoded body',
+        () async {
+      await send(() =>
+          Avanda().service('Chat/send').post({'type': 'text'}, files: {}));
+      await send(() => Avanda().service('Chat/send').post({'type': 'text'}));
+
+      expect(sent, hasLength(2));
+      for (final request in sent) {
+        expect(request.headers['content-type'],
+            startsWith('application/x-www-form-urlencoded'));
+        expect(request.bodyFields, {'type': 'text'});
+      }
     });
   });
 }

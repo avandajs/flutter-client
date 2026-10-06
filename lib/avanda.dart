@@ -346,6 +346,7 @@ class Avanda {
     endpoint,
     required RequestMethods method,
     Map<dynamic, dynamic>? params,
+    Map<String, String>? files,
   }) async {
     if (Avanda.config.rootUrl == null) {
       throw "Specify the server root URL in Avanda.setConfig() function";
@@ -359,6 +360,16 @@ class Avanda {
 
     print(endpoint);
 
+    // Read outside the try so a missing file surfaces as FileSystemException
+    // instead of being reported as a network error.
+    var multipartFiles = <http.MultipartFile>[];
+    if (method == RequestMethods.post && files != null) {
+      for (var entry in files.entries) {
+        multipartFiles
+            .add(await http.MultipartFile.fromPath(entry.key, entry.value));
+      }
+    }
+
     try {
       switch (method) {
         case RequestMethods.get:
@@ -368,11 +379,19 @@ class Avanda {
           );
           break;
         case RequestMethods.post:
-          httpResponse = await http.post(
-            Uri.parse(endpoint),
-            headers: headers,
-            body: params,
-          );
+          if (multipartFiles.isEmpty) {
+            httpResponse = await http.post(
+              Uri.parse(endpoint),
+              headers: headers,
+              body: params,
+            );
+          } else {
+            var request = http.MultipartRequest('POST', Uri.parse(endpoint))
+              ..headers.addAll(headers)
+              ..fields.addAll(params!.cast<String, String>())
+              ..files.addAll(multipartFiles);
+            httpResponse = await http.Response.fromStream(await request.send());
+          }
           break;
         case RequestMethods.delete:
           httpResponse = await http.delete(
@@ -415,8 +434,9 @@ class Avanda {
     return await makeRequest(endpoint: link, method: RequestMethods.get);
   }
 
-  Future<Response> post(Map<dynamic, dynamic> values) async {
-    return await set(values);
+  Future<Response> post(Map<dynamic, dynamic> values,
+      {Map<String, String>? files}) async {
+    return await set(values, files: files);
   }
 
   Future<Response> delete() async {
@@ -424,7 +444,8 @@ class Avanda {
     return await makeRequest(endpoint: link, method: RequestMethods.delete);
   }
 
-  Future<Response> set(Map<dynamic, dynamic> values) async {
+  Future<Response> set(Map<dynamic, dynamic> values,
+      {Map<String, String>? files}) async {
     if (queryTree.n == null) {
       throw "Specify service to send request to";
     }
@@ -436,6 +457,7 @@ class Avanda {
       endpoint: link,
       method: RequestMethods.post,
       params: postData,
+      files: files,
     );
   }
 

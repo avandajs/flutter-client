@@ -1,3 +1,9 @@
+## 0.2.1
+
+* `post` and `set` take an optional `files` map of field name to file path;
+  when given, the request is sent as `multipart/form-data` so files go as raw
+  bytes instead of base64 in a form field.
+
 ## 0.2.0
 
 Reliability release for the websocket layer, plus the first test suite.

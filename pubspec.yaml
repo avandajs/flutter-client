@@ -1,6 +1,6 @@
 name: avanda
 description: Flutter client for Avanda backends. Builds nested service queries, sends them over HTTP, and subscribes to live results over a self-healing websocket.
-version: 0.2.0
+version: 0.2.1
 
 environment:
   sdk: ">=2.15.1 <4.0.0"

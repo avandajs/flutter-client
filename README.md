@@ -107,6 +107,13 @@ await Avanda().service('Car/remove').ref(7).delete();
 `post` is an alias for `set`. `update` posts the same payload with a
 `_method=PATCH` override.
 
+To upload files, pass a map of form field name to file path. The request is then
+sent as `multipart/form-data`, with the other values as text fields:
+
+```dart
+await Avanda().service('Chat/send').post({'type': 'image'}, files: {'file': '/path/photo.jpg'});
+```
+
 ## Errors
 
 A non-2xx status in the response envelope throws a subclass of
