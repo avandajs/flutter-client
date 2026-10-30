@@ -96,6 +96,18 @@ response.getPerPage();
 response.isError();
 ```
 
+When the service replies with a file (`Response.file` on the server), use
+`getBytes` instead of `get`. It sends the same GET and returns the body as raw
+bytes, with no base64 or JSON decoding:
+
+```dart
+final bytes = await Avanda().service('Chat/file').params({'file_name': name}).getBytes();
+```
+
+An error envelope throws the same `RequestException` as `get`. If the server
+answers with a successful JSON envelope instead of a file, `getBytes` throws a
+`FormatException`.
+
 ## Writing
 
 ```dart
@@ -182,6 +194,45 @@ await stream?.close();
 
 `onClosed` reports your own close, `onServerClosed` reports one you did not ask
 for, and `onError` receives socket errors.
+
+## Two-way streams
+
+`stream` opens a socket on the same URL as `watch`, for sessions where the
+client sends a continuous stream, such as live microphone audio, and then waits
+for a reply:
+
+```dart
+final socket = Avanda().service('Voice/transcribe').params({'lang': 'en'}).stream();
+
+final reply = socket.messages.first;
+await for (final chunk in microphone) {
+  socket.sendBytes(chunk); // binary frame
+}
+socket.send({'type': 'end'}); // JSON text frame
+print((await reply).getData());
+await socket.close();
+```
+
+`messages` carries the server's text frames, decoded the same way as `watch`.
+`statusChanges` works as it does for `watch`.
+
+Each connection is a fresh session on the server, so a stream behaves
+differently from `watch`:
+
+* It does not reconnect. When the socket drops, `messages` completes, the
+  status becomes `closed`, and `send` and `sendBytes` do nothing. Pass
+  `stream(reconnect: true)` to redial automatically.
+* Frames sent before the socket opens are queued and sent in order once it
+  does. Nothing is ever replayed into a new connection; frames sent while a
+  reconnecting stream is down are discarded.
+* If the first connection fails, or takes longer than `connectTimeout`
+  (5 seconds by default), `messages` ends with the error and the status
+  becomes `closed`, so you can fall back straight away.
+
+`closeCode` tells you why the socket ended: `4401` means middleware rejected
+it (for example, not logged in), `1009` means a frame was too large, and `1000`
+is a normal close. After your own `close(code)`, it reports the code you passed
+unless the server sent a different one.
 
 ## Known limitations
 

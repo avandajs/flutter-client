@@ -2,6 +2,7 @@ library avanda;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:avanda/exceptions/Internal_server_error.dart';
 import 'package:avanda/exceptions/access_forbidden_error.dart';
 import 'package:avanda/exceptions/bad_request_error.dart';
@@ -107,6 +108,35 @@ class AvandaStream {
   Future<AvandaStream> send(Map<String, dynamic> data) async {
     controller.send(jsonEncode(data));
     return this;
+  }
+}
+
+/// A two-way socket for one server-side session, returned by
+/// [Avanda.stream]. Frames sent before the socket opens are delivered in order
+/// once it does; after it drops, sends are discarded and nothing is replayed
+/// into a new connection.
+class AvandaSocket {
+  Stream<Response> messages;
+  WSController controller;
+
+  AvandaSocket({required this.messages, required this.controller});
+
+  Stream<WSStatus> get statusChanges => controller.statusChanges;
+
+  /// The server's close code, e.g. 4401 when middleware rejected the
+  /// connection, or the code passed to [close].
+  int? get closeCode => controller.closeCode;
+
+  void send(Map<String, dynamic> data) {
+    controller.send(jsonEncode(data));
+  }
+
+  void sendBytes(Uint8List bytes) {
+    controller.sendBytes(bytes);
+  }
+
+  Future<void> close([int code = 1000]) async {
+    await controller.closeWs(code);
   }
 }
 
@@ -348,6 +378,17 @@ class Avanda {
     Map<dynamic, dynamic>? params,
     Map<String, String>? files,
   }) async {
+    var httpResponse = await _send(
+        endpoint: endpoint, method: method, params: params, files: files);
+    return _toResponse(httpResponse);
+  }
+
+  Future<http.Response> _send({
+    endpoint,
+    required RequestMethods method,
+    Map<dynamic, dynamic>? params,
+    Map<String, String>? files,
+  }) async {
     if (Avanda.config.rootUrl == null) {
       throw "Specify the server root URL in Avanda.setConfig() function";
     }
@@ -405,6 +446,10 @@ class Avanda {
       throw InternetNetworkError(
           ResponseStruct.fromJson({'msg': e.toString()}));
     }
+    return httpResponse;
+  }
+
+  Response _toResponse(http.Response httpResponse) {
     if (Avanda.config.debugMode) {
       print(httpResponse.body);
     }
@@ -432,6 +477,20 @@ class Avanda {
   Future<Response> get() async {
     var link = toLink();
     return await makeRequest(endpoint: link, method: RequestMethods.get);
+  }
+
+  Future<Uint8List> getBytes() async {
+    var link = toLink();
+    var httpResponse = await _send(endpoint: link, method: RequestMethods.get);
+
+    var contentType = httpResponse.headers['content-type'] ?? '';
+    if (!contentType.contains('application/json')) {
+      return httpResponse.bodyBytes;
+    }
+
+    // Throws the mapped RequestException when the envelope is an error.
+    _toResponse(httpResponse);
+    throw const FormatException('Expected file bytes, got a JSON response');
   }
 
   Future<Response> post(Map<dynamic, dynamic> values,
@@ -490,6 +549,43 @@ class Avanda {
   }
 
   Future<AvandaStream?> watch([WatchCallback? callback]) async {
+    var controller = WSController(wsUrl: _watchUrl(), headers: headers);
+    var streamController = controller.streamController;
+
+    var stream = AvandaStream(
+      stream: streamController.stream
+          .map((event) => Response(ResponseStruct.fromJson(jsonDecode(event)))),
+      wsSink: streamController.sink,
+      controller: controller,
+    );
+
+    return stream;
+  }
+
+  /// Opens a two-way socket on the same URL as [watch]. Unlike [watch] it does
+  /// not reconnect unless [reconnect] is set, and never replays frames into a
+  /// new connection. A first connection that fails or exceeds
+  /// [connectTimeout] ends [AvandaSocket.messages] with the error.
+  AvandaSocket stream({
+    bool reconnect = false,
+    Duration connectTimeout = const Duration(seconds: 5),
+  }) {
+    var controller = WSController(
+      wsUrl: _watchUrl(),
+      headers: headers,
+      reconnect: reconnect,
+      session: true,
+      connectTimeout: connectTimeout,
+    );
+
+    return AvandaSocket(
+      messages: controller.streamController.stream
+          .map((event) => Response(ResponseStruct.fromJson(jsonDecode(event)))),
+      controller: controller,
+    );
+  }
+
+  String _watchUrl() {
     if (queryTree.n == null) {
       throw "Specify service to send request to";
     }
@@ -516,16 +612,6 @@ class Avanda {
       endpoint += '&data=' + jsonEncode(postData);
     }
 
-    var controller = WSController(wsUrl: endpoint, headers: headers);
-    var streamController = controller.streamController;
-
-    var stream = AvandaStream(
-      stream: streamController.stream
-          .map((event) => Response(ResponseStruct.fromJson(jsonDecode(event)))),
-      wsSink: streamController.sink,
-      controller: controller,
-    );
-
-    return stream;
+    return endpoint;
   }
 }

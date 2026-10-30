@@ -303,6 +303,92 @@ void main() {
     });
   });
 
+  group('getBytes', () {
+    final fileBytes = [0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x0d, 0x0a];
+
+    http.Response file() => http.Response.bytes(fileBytes, 200,
+        headers: {'content-type': 'image/png'});
+
+    http.Response jsonEnvelope(int statusCode, {String? msg}) =>
+        http.Response(envelope(statusCode, msg: msg).body, 200,
+            headers: {'content-type': 'application/json; charset=utf-8'});
+
+    test('returns the exact bytes of a non-JSON reply', () async {
+      final bytes = await send(
+        () => Avanda()
+            .service('Chat/file')
+            .params({'file_name': 'a.png'}).getBytes(),
+        respond: (_) => file(),
+      );
+
+      expect(bytes, fileBytes);
+    });
+
+    test('issues the same GET as get()', () async {
+      Avanda.setHeaders({'Authorization': 'Bearer tok', 'X-Tenant': 'acme'});
+
+      await send(
+          () => Avanda()
+              .service('Chat/file')
+              .params({'file_name': 'a.png'}).getBytes(),
+          respond: (_) => file());
+      await send(() =>
+          Avanda().service('Chat/file').params({'file_name': 'a.png'}).get());
+
+      final bytesRequest = sent.first;
+      final getRequest = sent.last;
+      expect(bytesRequest.method, 'GET');
+      expect(bytesRequest.body, isEmpty);
+      expect(bytesRequest.url, getRequest.url);
+      expect(queryParamOf(bytesRequest.url), containsPair('n', 'Chat'));
+      expect(queryParamOf(bytesRequest.url), containsPair('f', 'file'));
+      expect(queryParamOf(bytesRequest.url),
+          containsPair('pr', {'file_name': 'a.png'}));
+      expect(bytesRequest.headers, containsPair('Authorization', 'Bearer tok'));
+      expect(bytesRequest.headers, containsPair('X-Tenant', 'acme'));
+      expect(bytesRequest.headers, getRequest.headers);
+    });
+
+    final expected = <int, Matcher>{
+      400: isA<BadRequestError>(),
+      404: isA<FileNotFoundError>(),
+      500: isA<InternalServerError>(),
+    };
+
+    expected.forEach((status, matcher) {
+      test('a $status JSON envelope throws the matching RequestException', () {
+        expect(
+          send(
+            () => Avanda().service('Chat/file').getBytes(),
+            respond: (_) => jsonEnvelope(status, msg: 'failed'),
+          ),
+          throwsA(allOf(isA<RequestException>(), matcher)),
+        );
+      });
+    });
+
+    test('a success JSON envelope throws FormatException', () {
+      expect(
+        send(
+          () => Avanda().service('Chat/file').getBytes(),
+          respond: (_) => jsonEnvelope(200, msg: 'ok'),
+        ),
+        throwsA(isA<FormatException>().having((e) => e.message, 'message',
+            'Expected file bytes, got a JSON response')),
+      );
+    });
+
+    test('a socket failure becomes InternetNetworkError', () {
+      expect(
+        send(
+          () => Avanda().service('Chat/file').getBytes(),
+          failWith: (_) => http.ClientException('Connection refused'),
+        ),
+        throwsA(isA<InternetNetworkError>()),
+      );
+    });
+  });
+
   group('multipart uploads', () {
     late Directory tempDir;
     late File photo;

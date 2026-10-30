@@ -27,8 +27,23 @@ class WSController {
   /// client in a hot redial loop.
   Duration stableAfter;
 
-  /// Upper bound on messages held while the socket is down.
+  /// Upper bound on messages held while the socket is down. Not applied in
+  /// [session] mode, where dropping the oldest frame would corrupt the session.
   int maxPendingMessages;
+
+  /// Whether a dropped socket is redialled. When false the controller closes
+  /// for good on the first drop or failed dial.
+  bool reconnect;
+
+  /// Session mode, for streams where each connection is a fresh server-side
+  /// session. Frames are only queued until the first connection opens; while
+  /// the socket is down they are discarded, so nothing from an old session is
+  /// replayed into a new one. A failed first dial closes the controller with
+  /// the error instead of retrying, so callers can fall back immediately.
+  bool session;
+
+  /// Per-dial limit. Null waits for as long as the platform does.
+  Duration? connectTimeout;
 
   StreamController<String> streamController = StreamController.broadcast();
 
@@ -42,7 +57,7 @@ class WSController {
 
   final StreamController<WSStatus> _statusController =
       StreamController.broadcast();
-  final List<String> _pending = [];
+  final List<Object> _pending = [];
   final Random _random = Random();
 
   StreamSubscription? _subscription;
@@ -59,6 +74,9 @@ class WSController {
     this.maxBackoff = const Duration(seconds: 30),
     this.stableAfter = const Duration(seconds: 5),
     this.maxPendingMessages = 64,
+    this.reconnect = true,
+    this.session = false,
+    this.connectTimeout,
   }) {
     connect();
   }
@@ -85,6 +103,11 @@ class WSController {
     WebSocket? socket;
     try {
       socket = await connectWs();
+    } catch (e) {
+      // connectWs only throws when it has given up, which ends the controller.
+      if (!streamController.isClosed) streamController.addError(e);
+      await closeWs();
+      return;
     } finally {
       // Cleared before the handlers are attached, so a drop that lands during
       // registration schedules a fresh attempt instead of being swallowed.
@@ -96,7 +119,8 @@ class WSController {
   }
 
   /// Dials until it succeeds, waiting out [_backoff] between attempts. Returns
-  /// null once [closeWs] has been called.
+  /// null once [closeWs] has been called, and rethrows the dial error when
+  /// [reconnect] is off or a [session] could not open its first connection.
   Future<WebSocket?> connectWs() async {
     while (!wsClosed) {
       _setStatus(_everConnected ? WSStatus.reconnecting : WSStatus.connecting);
@@ -107,13 +131,23 @@ class WSController {
       }
 
       try {
-        var socket = await WebSocket.connect(wsUrl, headers: headers);
+        var dial = WebSocket.connect(wsUrl, headers: headers);
+        var socket = connectTimeout == null
+            ? await dial
+            : await dial.timeout(connectTimeout!, onTimeout: () {
+                // The dial keeps running past the timeout, so whatever it
+                // eventually opens has to be closed rather than leaked.
+                dial.then<void>((opened) => opened.close(), onError: (_) {});
+                throw TimeoutException(
+                    'WebSocket connect timed out', connectTimeout);
+              });
         if (wsClosed) {
           await socket.close();
           return null;
         }
         return socket;
       } catch (_) {
+        if (!reconnect || (session && !_everConnected)) rethrow;
         _attempt++;
       }
     }
@@ -145,22 +179,35 @@ class WSController {
     _flushPending();
   }
 
-  /// Queues [message] while the socket is down so it survives a reconnect
-  /// instead of being dropped on the floor.
+  /// Sends [message] as a text frame, queueing it while the socket is down so
+  /// it survives a reconnect instead of being dropped on the floor.
   send(String message) {
+    _add(message);
+  }
+
+  /// Sends [bytes] as a binary frame, queued in order with [send].
+  sendBytes(List<int> bytes) {
+    _add(bytes);
+  }
+
+  _add(Object frame) {
     if (wsClosed) return;
 
     var socket = channel;
     if (socket == null) {
-      if (_pending.length >= maxPendingMessages) _pending.removeAt(0);
-      _pending.add(message);
+      if (session) {
+        if (_everConnected) return;
+      } else if (_pending.length >= maxPendingMessages) {
+        _pending.removeAt(0);
+      }
+      _pending.add(frame);
       return;
     }
 
-    socket.add(message);
+    socket.add(frame);
   }
 
-  closeWs() async {
+  closeWs([int code = WebSocketStatus.normalClosure]) async {
     if (wsClosed) return;
     wsClosed = true;
     _pending.clear();
@@ -173,8 +220,8 @@ class WSController {
       // An explicit code lets the server tell a clean goodbye from an abrupt
       // drop. dart:io only reports a code the peer echoed back, so fall back to
       // the closure we asked for.
-      await socket.close(WebSocketStatus.normalClosure);
-      closeCode = socket.closeCode ?? WebSocketStatus.normalClosure;
+      await socket.close(code);
+      closeCode = socket.closeCode ?? code;
     }
     channel = null;
 
@@ -194,6 +241,11 @@ class WSController {
     channel = null;
 
     if (wsClosed) return;
+
+    if (!reconnect) {
+      closeWs();
+      return;
+    }
 
     // A connection that barely lasted counts as a failed attempt so the
     // backoff keeps growing; one that was healthy redials immediately.
@@ -226,7 +278,7 @@ class WSController {
   _flushPending() {
     if (_pending.isEmpty) return;
 
-    var queued = List<String>.from(_pending);
+    var queued = List<Object>.from(_pending);
     _pending.clear();
     for (var message in queued) {
       channel?.add(message);

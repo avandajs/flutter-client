@@ -12,8 +12,15 @@ class FakeWsServer {
   /// Currently connected sockets, newest last.
   final List<WebSocket> sockets = [];
 
-  /// Everything any client has sent, in arrival order.
+  /// Every text frame any client has sent, in arrival order.
   final List<String> received = [];
+
+  /// Every frame any client has sent, text as String and binary as List<int>,
+  /// in arrival order.
+  final List<Object> frames = [];
+
+  /// The request of every dial, so tests can assert on URL and headers.
+  final List<HttpRequest> dials = [];
 
   /// Total upgrades accepted since start. Reconnect bugs show up here as a
   /// count that climbs faster than the number of drops.
@@ -27,12 +34,22 @@ class FakeWsServer {
   /// on the client side.
   bool rejectUpgrades = false;
 
+  /// When true the handshake is never answered, to exercise connect timeouts.
+  bool stallUpgrades = false;
+
+  /// When set, every socket is closed with this code right after upgrading,
+  /// the way middleware rejects a connection.
+  int? closeOnUpgrade;
+
   static Future<FakeWsServer> start() async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final fake = FakeWsServer._(server);
 
     server.listen((request) async {
       fake.requests++;
+      fake.dials.add(request);
+
+      if (fake.stallUpgrades) return;
 
       if (fake.rejectUpgrades) {
         request.response.statusCode = HttpStatus.serviceUnavailable;
@@ -47,11 +64,16 @@ class FakeWsServer {
       socket.listen(
         (data) {
           if (data is String) fake.received.add(data);
+          fake.frames.add(data);
         },
         onDone: () => fake.sockets.remove(socket),
         onError: (_) => fake.sockets.remove(socket),
         cancelOnError: true,
       );
+
+      if (fake.closeOnUpgrade != null) {
+        await socket.close(fake.closeOnUpgrade);
+      }
     });
 
     return fake;

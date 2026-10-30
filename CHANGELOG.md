@@ -1,3 +1,23 @@
+## 0.3.0
+
+* `stream()` opens a two-way `AvandaSocket` on the `/watch` URL for streaming
+  sessions such as live audio. `send` writes a JSON text frame, `sendBytes` a
+  binary frame, and `closeCode` reports why the socket ended (e.g. `4401` when
+  middleware rejected it).
+* Unlike `watch()`, a stream does not reconnect unless `reconnect: true`, and
+  never replays frames into a new connection. Frames sent before the socket
+  opens are delivered in order; after a drop, sends are discarded.
+* A stream whose first connection fails or exceeds `connectTimeout` (default
+  5 seconds) ends `messages` with the error and reports `WSStatus.closed`.
+* `WSController` gains `reconnect`, `session` and `connectTimeout` options,
+  `sendBytes`, and an optional close code on `closeWs`. Defaults are
+  unchanged, so `watch()` behaves as before.
+
+## 0.2.2
+
+* `getBytes()` fetches a raw file response (`Response.file` on the server)
+  without base64 or JSON decoding.
+
 ## 0.2.1
 
 * `post` and `set` take an optional `files` map of field name to file path;
